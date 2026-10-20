@@ -1,53 +1,53 @@
-# Проверка времени жизни ModAPI
+# ModAPI lifetime verification
 
-Дата: 2026-10-20 (UTC). Godot `4.7.2.stable.official.ed1daf0bf`, Windows x64. Из корня Archbox:
+Date: 2026-10-20 (UTC). Godot `4.7.2.stable.official.ed1daf0bf`, Windows x64. Run from the Archbox repository root:
 
 ```sh
 python addons/gsom_modapi/tests/lifetime/run.py --godot-wrapper tools/godot.sh --output build/addons/gsom_modapi/lifetime-test
 ```
 
-Путь `--output` должен быть новым: runner не удаляет и не перезаписывает существующие каталоги. Он копирует ядро аддона и fixtures в изолированный проект без деморесурсов, выполняет импорт и ограниченный запуск. Логи импорта и исполнения создаются рядом с проектом. Для suite/after любые ERROR и WARNING считаются неуспехом. Режим before сохраняет диагностики исходной версии как измерение; invalid-selector требует ровно две ожидаемые ошибки валидации без других ошибок и предупреждений.
+The `--output` path must not already exist: the runner does not remove or overwrite existing directories. It copies the addon core and fixtures into an isolated project without demo assets, then imports and runs that project. Import and runtime logs are written next to the output directory. In suite/after mode, any ERROR or WARNING fails verification. The before mode preserves baseline diagnostics as measurements; invalid-selector mode requires exactly two expected validation errors and no other errors or warnings.
 
-Проверяются 50 циклов `launch → await shutdown`, пустой реестр после завершения, освобождение контекста, загрузчика, реестра, core, модов, описаний и runtime-узлов через `WeakRef`. У core и мода есть намеренный цикл с helper-объектом; hook завершения разрывает его. Внешний тестовый наблюдатель хранит только слабые ссылки. Также проверяются сортировка и индексы реестра, неизменность исходных ресурсов, отсутствие прямого доступа к внутренним массивам, отклонение повторного запуска, отсутствующего/неподходящего core, откат при неподходящем моде, повторное/одновременное завершение и остановка до отложенного `_core_main`.
+The suite checks 50 `launch -> await shutdown` cycles, an empty registry after shutdown, and release of contexts, loaders, registries, core instances, mods, descriptions, and runtime nodes through `WeakRef`. The core and mod deliberately form cycles with helper objects; their shutdown hooks break those cycles. The external observer keeps only weak references. Other checks cover registry indexes and sorting, immutable source resources, result arrays that do not expose internal storage, rejection of repeated launches, missing/invalid cores, rollback after an invalid mod, repeated/concurrent shutdown, and stopping before deferred `_core_main` execution.
 
-## Сравнение одинаковой нагрузки
+## Comparing the same workload
 
-Для базовой версии использован неизменённый payload коммита `e974bb0e4ed3b202d395af566e652b833f0b1e58`. В тестах до/после одинаковы core, мод, описания, вспомогательные циклы и создаваемый узел. Опциональные ключи отключены, чтобы отдельная старая ошибка ключевого индекса не мешала измерению. Исходный API не имел `shutdown`: в нём повторяются только `launch`. Новая версия явно завершает каждый контекст перед следующим запуском.
+The baseline uses the unchanged addon payload from commit `e974bb0e4ed3b202d395af566e652b833f0b1e58`. Both versions use the same core, mod, descriptions, helper cycles, and spawned node. Optional content keys are disabled so an unrelated baseline key-index bug does not interfere with the measurements. The original API had no `shutdown`, so the baseline repeats `launch` calls. The new version explicitly shuts down each context before the next launch.
 
 ```sh
 python addons/gsom_modapi/tests/lifetime/run.py --godot-wrapper tools/godot.sh --mode before --addon-source build/addons/gsom_modapi/lifetime-before/addons/gsom_modapi --output build/addons/gsom_modapi/lifetime-verified-before
 python addons/gsom_modapi/tests/lifetime/run.py --godot-wrapper tools/godot.sh --mode after --output build/addons/gsom_modapi/lifetime-verified-after
 ```
 
-`--addon-source` — путь к сохранённым исходникам базовой версии; приведённый путь относится к машине исследования. Для воспроизведения на другой машине нужно получить payload указанного коммита в отдельный каталог. Сам runner не меняет рабочие копии и Git-ревизии.
+`--addon-source` points to a saved baseline payload; the example path belongs to the investigation machine. To reproduce elsewhere, obtain the addon payload from the specified commit in a separate directory. The runner does not change working copies or Git revisions.
 
-| Измерение | Исходная версия | Контекст с shutdown |
+| Measurement | Baseline | Context with shutdown |
 |---|---:|---:|
-| Записей в активном реестре на 1-м цикле | 2 | 2 |
-| Записей в активном реестре на 50-м цикле | 100 | 2 |
-| Runtime-узлов на 50-м активном цикле | 50 | 1 |
-| Живых отслеживаемых экземпляров после всей серии | 350 из 350 | 0 из 350 |
-| Записей после последнего завершения | API завершения отсутствовал | 0 |
-| Диагностика объектов/ресурсов при выходе | 209 / 7 | 3 / 2 |
+| Active registry entries on cycle 1 | 2 | 2 |
+| Active registry entries on cycle 50 | 100 | 2 |
+| Runtime nodes during active cycle 50 | 50 | 1 |
+| Tracked instances still alive after the series | 350 of 350 | 0 of 350 |
+| Entries after the final shutdown | No shutdown API | 0 |
+| Object/resource exit diagnostics | 209 / 7 | 3 / 2 |
 
-Пик удерживаемых экземпляров после каждого shutdown в отдельной полной серии из 50 циклов — 0; функциональных ошибок — 0. Это измерение числа объектов, не количества байт памяти. При одиночном корректном запуске долгоживущий реестр сам по себе не является ошибкой; сравнение проверяет добавленный контракт повторного запуска и освобождения.
+The peak number of retained instances after each shutdown in the separate 50-cycle suite was 0, with 0 functional failures. These are object counts, not memory usage in bytes. A long-lived registry during one valid launch is not inherently a bug; this comparison verifies the new relaunch and release contract.
 
-На этапе только контекста оставались 3 объекта и 2 ресурса скриптов. Они воспроизводились в минимальном проекте с пустым экспортируемым массивом собственного класса. Удаление экземпляров контекста эту отдельную проблему не исправило. Следующий эксперимент по прямому поручению автора изменил поле selectors на Array[Resource] с проверкой и локальной типизацией при потреблении; результат описан ниже.
+At the context-only stage, 3 objects and 2 script resources remained. That result also reproduced in a minimal project with an empty exported array of its own class. Releasing context instances did not fix the separate script-resource issue. A subsequent change replaced the selectors field with `Array[Resource]`, validating and narrowing entries at the consumption boundary; the results are recorded below.
 
-Дополнительно на полном исходном демо выполнены три цикла запуска/завершения: один остановлен через 0.1 секунды, два — через 2.5 секунды. Во всех трёх core освобождён, ошибок исполнения не было; осталась только та же диагностика 3/2. Загружены и проверены на возможность инстанцирования все 82 скрипта основного проекта вне `.gdignore`. Графика, пользовательский ввод, игра по сети, выгрузка PCK и длительный стресс-тест этим не подтверждаются. Полный режим всех предупреждений как ошибок для унаследованного проекта пока не обеспечен; использованы его исходные настройки диагностик.
+Three cycles were also run using the complete original demo: one stopped after 0.1 seconds and two after 2.5 seconds. The core was released in all three, with no runtime errors; only the same 3/2 exit diagnostics remained at that stage. All 82 main-project scripts outside `.gdignore` were loaded and checked for instantiability. These checks do not establish graphics, input, multiplayer, PCK unloading, or prolonged stress-test correctness. Comprehensive warnings-as-errors coverage for the inherited project is not yet configured; its existing diagnostic settings were used.
 
-Локальные логи в Archbox: `build/addons/gsom_modapi/lifetime-verified-before-run.log`, `lifetime-verified-after-run.log`, `lifetime-verified-suite-run.log`, `demo-lifetime-run.log`, `lifetime-full-compile.log`.
+Local Archbox logs: `build/addons/gsom_modapi/lifetime-verified-before-run.log`, `lifetime-verified-after-run.log`, `lifetime-verified-suite-run.log`, `demo-lifetime-run.log`, and `lifetime-full-compile.log`.
 
-## После удаления самоссылки в поле
+## After removing the self-referential field type
 
-В `GsomModSelector` заменён `@export var selectors: Array[GsomModSelector]` на `Array[Resource]`. При потреблении проверяется тип элемента и создаётся локальная `GsomModSelector`. Конкретные типы локальных массивов, переменных, параметров и результатов сохранены. Минимальные пробы также подтвердили, что обычное поле собственного скалярного типа само по себе не воспроизводит этот остаток; причина не в любом упоминании собственного класса.
+`GsomModSelector` changed from `@export var selectors: Array[GsomModSelector]` to `Array[Resource]`. Consumers validate each entry before assigning it to a local `GsomModSelector`. Concrete local array, variable, parameter, and return types are preserved. Minimal probes also showed that an ordinary scalar field of its own class does not reproduce this retention; mentioning the current class is not inherently sufficient to trigger it.
 
-Повторены импорт, полный цикл suite из 50 запусков и три цикла полного демо. Все завершились без ERROR/WARNING; остаток ресурсов скриптов уменьшился с 3 объектов / 2 ресурсов до 0 / 0. Все 82 скрипта основного проекта вне `.gdignore` компилируются. Дополнительно проверены вложенные селекторы, нормализация, выбор запроса и обход реального циклического графа (после проверки связи разрываются владельцем).
+Import, the complete 50-cycle suite, and three complete-demo cycles were repeated. All finished without ERROR/WARNING; the remaining script-resource counts dropped from 3 objects / 2 resources to 0 / 0. All 82 main-project scripts outside `.gdignore` compile. Additional checks cover nested selectors, normalization, query selection, and traversal of an actual cyclic graph; the owner breaks the graph's links after the check.
 
-Негативный сценарий проверяет неподходящий Resource и null, затем исправляет данные и проверяет повторный расчёт без закэшированного частичного результата:
+The negative scenario checks an unrelated Resource and null, then corrects the input and verifies recalculation without a cached partial result:
 
 ```sh
 python addons/gsom_modapi/tests/lifetime/run.py --godot-wrapper tools/godot.sh --mode invalid-selector --output build/addons/gsom_modapi/invalid-selector-check
 ```
 
-Логи: `lifetime-no-self-fields-final-run.log`, `invalid-selector-check-run.log`, `import-no-self-fields.log`, `compile-no-self-fields.log`, `demo-lifetime-no-self-fields.log` в `build/addons/gsom_modapi/` Archbox. Минимальные пробы — `build/addons/self-reference-probes/`: typed-field оставляет один скрипт, raw-field-local, resource-field-local, scalar-self-field и typed-local-array завершаются без диагностик. Эти результаты относятся к Godot 4.7.2 на Windows x64.
+Logs in Archbox's `build/addons/gsom_modapi/`: `lifetime-no-self-fields-final-run.log`, `invalid-selector-check-run.log`, `import-no-self-fields.log`, `compile-no-self-fields.log`, and `demo-lifetime-no-self-fields.log`. Minimal probes are in `build/addons/self-reference-probes/`: typed-field leaves one script, while raw-field-local, resource-field-local, scalar-self-field, and typed-local-array finish without diagnostics. These observations apply to Godot 4.7.2 on Windows x64.

@@ -10,9 +10,9 @@ gameplay modes and systems.
 
 ## GsomModapi
 
-### Эксперимент: явное время жизни контекста
+### Explicit context lifetime
 
-`launch(core_pck, core_script) -> Error` создаёт один `GsomModContext`: экземпляры модов, core, реестр и корневой узел `scene`. Повторный `launch` при активном или завершающемся контексте возвращает `ERR_ALREADY_IN_USE`; для повторного запуска сначала дождись завершения:
+`launch(core_pck, core_script) -> Error` creates one `GsomModContext` owning the mod instances, core, registry, and runtime root node exposed as `scene`. Calling `launch` while a context is active or stopping returns `ERR_ALREADY_IN_USE`. Await shutdown before launching again:
 
 ```gdscript
 var result: Error = GsomModapi.launch("", "res://core/core.gd")
@@ -20,24 +20,24 @@ if result != OK:
 	push_error(error_string(result))
 	return
 
-# Позже, из управляющего узла:
+# Later, from the controlling node:
 await GsomModapi.shutdown()
 ```
 
-`shutdown()` вызывает `_mod_shutdown()` у core, затем у модов в обратном порядке загрузки, ставит runtime-сцену на удаление и ждёт кадр дерева. После этого очищает реестр, загрузчик и ссылки на core. Повторные и одновременные запросы завершения безопасны. Во время выхода из дерева выполняется освобождение ссылок без ожидания следующего кадра; дочерние узлы освобождает дерево Godot.
+`shutdown()` invokes `_mod_shutdown()` on the core, then on mods in reverse load order, queues the runtime scene for deletion, and waits for a scene-tree frame. It then clears the registry, loader, and core references. Repeated and concurrent shutdown requests are safe. During scene-tree exit, references are released without waiting for another frame; Godot's tree frees the child nodes.
 
-`_mod_shutdown() -> void` — новый необязательный синхронный hook в `GsomModMeta`. Он должен останавливать собственные операции, отключать внешние callbacks и разрывать собственные циклы сильных ссылок. Hook вызывается и при откате частично подготовленного запуска, поэтому должен учитывать незавершённую инициализацию. Автоматического обхода и разрушения произвольного графа пользовательских ресурсов нет. `_mod_init()` и `_mod_shutdown()` не должны приостанавливаться через `await`; менять контекст из `_mod_init()` нельзя.
+`_mod_shutdown() -> void` is a new optional synchronous hook in `GsomModMeta`. It must stop owned work, disconnect external callbacks, and break owned strong-reference cycles. The hook is also called when a partially prepared launch is rolled back, so implementations must tolerate incomplete initialization. Arbitrary user resource graphs are not automatically traversed or destroyed. Neither `_mod_init()` nor `_mod_shutdown()` may suspend with `await`; initialization hooks must not change the active context's lifecycle.
 
-Реестр и загрузчик теперь принадлежат контексту, их изменяемые данные больше не статические. Единственный владеющий индекс описаний — по ID, остальные индексы хранят ID. Результаты запросов возвращаются отдельными массивами. Регистрация выполняется во время инициализации модов/core и не меняет исходный ресурс. `scene` равен `null` вне контекста. Прямые обращения к прежним статическим helper-методам больше не поддерживаются; публичные запросы через `GsomModapi` сохранены.
+The registry and loader now belong to a context instead of keeping mutable static state. Only the ID index owns content descriptions; secondary indexes store IDs. Queries return separate result arrays. Registration is available during mod/core initialization and does not mutate the source resource. `scene` is `null` outside a context. Direct calls to the former static helpers are no longer supported; the public query methods on `GsomModapi` are preserved.
 
-Описание контента и созданный игровой объект имеют разное время жизни. Внешняя сильная ссылка на описание продолжит удерживать его после `shutdown()`; потребитель обязан отпустить её, когда больше не использует данные. Асинхронным операциям следует сохранять свой контекст и проверять его состояние перед продолжением, чтобы старый callback не использовал новый глобальный контекст.
+Content descriptions and spawned game objects have different lifetimes. An external strong reference will keep a description alive after `shutdown()`; consumers must release it when the data is no longer needed. Asynchronous work should capture its context and check that context's state before continuing, so a stale callback cannot operate on a new global context.
 
-Загрузка PCK меняет ресурсное пространство процесса Godot. Этот эксперимент не предоставляет размонтирование пакетов и не гарантирует горячую замену файлов. Проверки выполнены на Godot 4.7.2; совместимость с исходно указанным в CONTRIBUTING Godot 4.5.1 пока не перепроверялась.
+Loading a PCK changes Godot's process-wide resource space. This implementation does not unmount packages or guarantee hot replacement of files. Verification used Godot 4.7.2; compatibility with the Godot 4.5.1 version originally listed in CONTRIBUTING has not been rechecked.
 
-### Самоссылочные контейнеры
+### Self-referential containers
 
-По поручению автора поле `GsomModSelector.selectors` хранится как `Array[Resource]`, без ссылки на собственный скриптовый тип в значении поля по умолчанию. При обходе каждый элемент проверяется через `is GsomModSelector`, после чего используется локальная переменная конкретного типа. Неподходящий или null-элемент выдаёт ошибку; частичный результат не кэшируется. В инспекторе допустим базовый Resource, поэтому точный контракт проверяется потребителем.
+`GsomModSelector.selectors` uses `Array[Resource]` to avoid a reference to its own script type in a persistent default field value. Traversal checks each entry with `is GsomModSelector` before using a local variable of that concrete type. Invalid or null entries report an error; partial results are not cached. The inspector accepts the base Resource type, so the exact contract is validated by the consumer.
 
-На Godot 4.7.2 это устранило оставшуюся диагностику двух ресурсов скриптов. Отдельно проверены нетипизированное поле `Array` с локальной переменной собственного класса, `Array[Resource]` с такой переменной и локальный `Array[СобственныйКласс]`: все завершаются без удержания скриптов. Изменение типа поля не разрывает реальные циклы объектов при заполнении массива; их по-прежнему разрывает владелец.
+On Godot 4.7.2, this change removed the remaining two script-resource diagnostics. Separate probes verified an untyped `Array` field with a concrete local variable, an `Array[Resource]` field with the same local type, and a local `Array[OwnClass]`: all exited without retained script resources. Changing a field's element type does not break actual object cycles stored in the array; their owner must still break them.
 
-Измерения и воспроизводимые сценарии — [tests/lifetime/README.md](tests/lifetime/README.md).
+Measurements and reproducible scenarios are documented in [tests/lifetime/README.md](tests/lifetime/README.md).
