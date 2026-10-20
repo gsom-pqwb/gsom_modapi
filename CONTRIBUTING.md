@@ -4,7 +4,7 @@
 
 Use English only for all project-authored files and official communication, including
 code, comments, documentation, file names, commit messages, issues, pull requests,
-reviews, and release notes. See [AGENTS.md](AGENTS.md) for the repository-wide policy.
+reviews, and release notes.
 
 ## Engine & Scope
 
