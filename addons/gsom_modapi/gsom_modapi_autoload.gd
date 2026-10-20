@@ -1,67 +1,111 @@
 extends Node
 
-const ModRegistry = preload("./helpers/mod_registry.gd")
-const ModLoader = preload("./helpers/mod_loader.gd")
-const ModDeps = preload("./helpers/mod_deps.gd")
+const ModDeps: GDScript = preload("./helpers/mod_deps.gd")
 
-## This is [b]an autoload singleton[/b], that becomes globally available when you enable the plugin.
+var __context: GsomModContext = null
 
-var scene: Node = null
-var __core: GsomModCore = null
+## Runtime nodes belong to this context's scene tree, not the content registry.
+var scene: Node:
+	get:
+		return __context.scene if __context != null else null
 
-func _ready() -> void:
-	scene = Node.new()
-	add_child(scene)
+func get_context() -> GsomModContext:
+	return __context
 
-func launch(core_pck: String, core_script: String) -> void:
-	if core_pck:
-		var result: bool = ProjectSettings.load_resource_pack(core_pck, false)
-		if !result:
-			push_error("Error loading PCK '%s'." % core_pck)
-			return
-	
-	ModLoader.load_mods()
-	
+func launch(core_pck: String, core_script: String) -> Error:
+	if __context != null:
+		return ERR_ALREADY_IN_USE
+	if not core_pck.is_empty() and not ProjectSettings.load_resource_pack(core_pck, false):
+		return ERR_FILE_CANT_OPEN
+	if not ResourceLoader.exists(core_script, "GDScript"):
+		return ERR_FILE_NOT_FOUND
 	var script: GDScript = load(core_script) as GDScript
-	var inst: Variant = script.new()
-	if !(inst is GsomModCore):
-		push_error("The core script should extend 'GsomModCore'.")
+	if script == null or not script.can_instantiate():
+		return ERR_INVALID_DATA
+	var instance: Variant = script.new()
+	if not instance is GsomModCore:
+		if instance is Object and not instance is RefCounted:
+			instance.free()
+		return ERR_INVALID_DATA
+	var context: GsomModContext = GsomModContext.new()
+	context.core = instance
+	context.scene = Node.new()
+	context.scene.name = "ModContext"
+	__context = context
+	add_child(context.scene)
+	var load_result: Error = context.loader.load_mods()
+	if load_result != OK:
+		context.begin_shutdown()
+		context.scene.queue_free()
+		__context = null
+		context.finish_shutdown()
+		return load_result
+	context.loader.start_phase(&"~")
+	context.core._mod_init()
+	context.loader.end_phase()
+	context.state = GsomModContext.State.RUNNING
+	__start_core.call_deferred(context)
+	return OK
+
+func __start_core(context: GsomModContext) -> void:
+	if __context == context and context.state == GsomModContext.State.RUNNING:
+		context.core._core_main()
+
+## Await shutdown before relaunching. Repeated/concurrent shutdown is safe.
+func shutdown() -> void:
+	var context: GsomModContext = __context
+	if context == null:
 		return
-	__core = inst
-	
-	ModLoader.start_phase("~")
-	__core._mod_init()
-	ModLoader.end_phase()
-	
-	__core._core_main.call_deferred()
+	if context.state == GsomModContext.State.STARTING:
+		push_error("Await shutdown after launch has returned, not from an initialization hook")
+		return
+	if context.state == GsomModContext.State.STOPPING:
+		await context.stopped
+		return
+	context.begin_shutdown()
+	context.scene.queue_free()
+	await get_tree().process_frame
+	if __context == context:
+		__context = null
+	context.finish_shutdown()
 
+func _exit_tree() -> void:
+	if __context != null:
+		if __context.state != GsomModContext.State.STOPPING:
+			__context.begin_shutdown()
+		var context: GsomModContext = __context
+		__context = null
+		context.finish_shutdown()
 
-func register(desc: GsomModContent) -> GsomModContent:
-	return ModRegistry.register(desc)
+func register(description: GsomModContent) -> GsomModContent:
+	if __context == null or __context.state != GsomModContext.State.STARTING:
+		push_error("Content registration is only available during mod initialization")
+		return null
+	return __context.registry.register(description, __context.loader.gen_id(), __context.loader.get_phase())
 
-func content_by_id(id: StringName) -> GsomModContent:
-	return ModRegistry.get_by_id(id)
+func content_by_id(content_id: StringName) -> GsomModContent:
+	return __context.registry.get_by_id(content_id) if __context != null else null
 
 func content_by_kind(kind: StringName) -> Array[GsomModContent]:
-	return ModRegistry.get_by_kind(kind)
+	return __context.registry.get_by_kind(kind) if __context != null else []
 
 func content_by_key(key: StringName) -> GsomModContent:
-	return ModRegistry.get_by_key(key)
+	return __context.registry.get_by_key(key) if __context != null else null
 
 func content_by_key_all(key: StringName) -> Array[GsomModContent]:
-	return ModRegistry.get_by_key_all(key)
+	return __context.registry.get_by_key_all(key) if __context != null else []
 
 func content_by_query(query: GsomModQueryBase) -> Array[GsomModContent]:
-	return ModRegistry.get_by_query(query)
+	return __context.registry.get_by_query(query) if __context != null else []
 
-func content_by_mod(mod: StringName) -> Array[GsomModContent]:
-	return ModRegistry.get_by_mod(mod)
+func content_by_mod(mod_name: StringName) -> Array[GsomModContent]:
+	return __context.registry.get_by_mod(mod_name) if __context != null else []
 
 func traverse_selector(selector: GsomModSelector) -> Array[StringName]:
-	return ModDeps.traverse_selector(selector)
+	return ModDeps.traverse_selector(selector, __context.registry) if __context != null else []
 
 func traverse_query(query: GsomModQueryBase) -> Array[StringName]:
-	return ModDeps.traverse_query(query)
+	return ModDeps.traverse_query(query, __context.registry) if __context != null else []
 
 func traverse_content(content: GsomModContent) -> Array[StringName]:
-	return ModDeps.traverse_content(content)
+	return ModDeps.traverse_content(content, __context.registry) if __context != null else []

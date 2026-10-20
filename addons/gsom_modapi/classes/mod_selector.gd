@@ -9,7 +9,9 @@ class_name GsomModSelector
 ## Such as for loading all the related stuff that you are going to use later.
 ##
 ## These will be traversed and all tables will merge.
-@export var selectors: Array[GsomModSelector] = []
+# Avoid a script-level default container retaining this script's own type.
+# Each entry is checked and narrowed to GsomModSelector when traversed.
+@export var selectors: Array[Resource] = []
 
 var __raw_cache: Dictionary[GsomModQueryBase, float] = {}
 var __norm_cache: Dictionary[GsomModQueryBase, float] = {}
@@ -54,7 +56,8 @@ func get_raw() -> Dictionary[GsomModQueryBase, float]:
 		return __raw_cache.duplicate()
 	
 	var result: Dictionary[GsomModQueryBase, float] = {}
-	__get_raw_impl(result, {})
+	if not __get_raw_impl(result, {}):
+		return {}
 	
 	__raw_cache = result
 	return __raw_cache.duplicate()
@@ -105,14 +108,20 @@ func __store_query_additive(
 func __get_raw_impl(
 	inout_result: Dictionary[GsomModQueryBase, float],
 	inout_visited: Dictionary[GsomModSelector, bool],
-) -> void:
+) -> bool:
 	if inout_visited.has(self):
-		return
+		return true
 	
 	inout_visited[self] = true
 	
 	for query: GsomModQueryBase in table:
 		__store_query_additive(inout_result, query, table[query])
 	
-	for selector: GsomModSelector in selectors:
-		selector.__get_raw_impl(inout_result, inout_visited)
+	for entry: Resource in selectors:
+		if not entry is GsomModSelector:
+			push_error("Selector references must contain only non-null GsomModSelector resources")
+			return false
+		var selector: GsomModSelector = entry
+		if not selector.__get_raw_impl(inout_result, inout_visited):
+			return false
+	return true

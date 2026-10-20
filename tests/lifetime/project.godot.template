@@ -1,0 +1,9 @@
+config_version=5
+
+[application]
+config/name="ModAPI lifetime tests"
+run/main_scene="res://tests/lifetime/probe.tscn"
+
+[autoload]
+LifetimeObserver="*res://tests/lifetime/observer.gd"
+GsomModapi="*res://addons/gsom_modapi/gsom_modapi_autoload.gd"

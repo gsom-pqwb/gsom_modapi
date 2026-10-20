@@ -1,15 +1,27 @@
 extends RefCounted
+class_name GsomModLoader
 
 class ModSettings:
 	var disabled_mods: Array[StringName] = []
 
-static var __mod_settings: ModSettings = null
-static var __phase: StringName = &""
-static var __id: int = 0
+var __mod_settings: ModSettings = null
+var __phase: StringName = &""
+var __id: int = 0
 
-static var loaded_mods: Dictionary[StringName, GsomModMeta] = {}
+var loaded_mods: Dictionary[StringName, GsomModMeta] = {}
 
-static func load_mods() -> void:
+func stop_mods() -> void:
+	var names: Array[StringName] = loaded_mods.keys()
+	names.reverse()
+	for name: StringName in names:
+		loaded_mods[name]._mod_shutdown()
+
+func clear() -> void:
+	loaded_mods.clear()
+	__mod_settings = null
+	end_phase()
+
+func load_mods() -> Error:
 	__read_settings()
 	
 	var user_mod_names: PackedStringArray = __fetch_user_mod_names()
@@ -19,29 +31,37 @@ static func load_mods() -> void:
 	for name: String in user_mod_names:
 		if __mod_settings.disabled_mods.has(name):
 			continue
-		if ProjectSettings.load_resource_pack("user://mods/%s.pck", false):
+		if ProjectSettings.load_resource_pack("user://mods/%s.pck" % name, false):
 			loaded_mod_names.append(name)
 	
 	for name: String in builtin_mod_names:
 		if !loaded_mod_names.has(name):
 			loaded_mod_names.append(name)
+	loaded_mod_names.sort()
 	
 	for name: String in loaded_mod_names:
-		var script: GDScript = load("res://mods/%s/mod.gd" % name)
-		var inst: Object = script.new()
-		if !(inst is GsomModMeta):
-			push_error("The mod script should extend 'GsomModMeta'.")
-			continue
-		loaded_mods[name] = inst as GsomModMeta
+		var script_path: String = "res://mods/%s/mod.gd" % name
+		if not ResourceLoader.exists(script_path, "GDScript"):
+			return ERR_FILE_NOT_FOUND
+		var script: GDScript = load(script_path) as GDScript
+		if script == null or not script.can_instantiate():
+			return ERR_INVALID_DATA
+		var instance: Variant = script.new()
+		if not instance is GsomModMeta:
+			if instance is Object and not instance is RefCounted:
+				instance.free()
+			return ERR_INVALID_DATA
+		loaded_mods[name] = instance
 	
 	for name: StringName in loaded_mods:
 		start_phase(name)
 		loaded_mods[name]._mod_init()
 		end_phase()
+	return OK
 
 # Reads "user://mods/*" for external mods.
 # @returns An array of directory names found under "mods".
-static func __fetch_user_mod_names() -> PackedStringArray:
+func __fetch_user_mod_names() -> PackedStringArray:
 	var result: PackedStringArray = PackedStringArray()
 	var base: String = "user://mods"
 
@@ -70,7 +90,7 @@ static func __fetch_user_mod_names() -> PackedStringArray:
 
 # Reads "res://mods/*" for builtin mods.
 # @returns An array of directory names found under "mods".
-static func __fetch_builtin_mod_names() -> PackedStringArray:
+func __fetch_builtin_mod_names() -> PackedStringArray:
 	var result: PackedStringArray = PackedStringArray()
 	var base: String = "res://mods"
 
@@ -103,21 +123,21 @@ static func __fetch_builtin_mod_names() -> PackedStringArray:
 # Only if they match the data type - array to array, object to object, number to number, etc.
 #
 # The missing fields are taken from `__mod_settings_default` as is.
-static func __read_settings() -> void:
+func __read_settings() -> void:
 	__mod_settings = ModSettings.new()
 
 # Writes "user://mod_settings.json"
 # The `__mod_settings` var contents is dumped into the file
-static func __write_settings() -> void:
+func __write_settings() -> void:
 	pass
 
 # Per-mod loading phase
-static func start_phase(name: StringName) -> void:
+func start_phase(name: StringName) -> void:
 	__phase = name
 	__id = 0
 
 # Create a pre-mod ID
-static func gen_id() -> StringName:
+func gen_id() -> StringName:
 	if !__phase:
 		push_error("Can't generate ID outside init phases.")
 		return &""
@@ -125,10 +145,10 @@ static func gen_id() -> StringName:
 	return &"%s:%s" % [__phase, __id]
 
 # Finish the load phase
-static func end_phase() -> void:
+func end_phase() -> void:
 	__phase = &""
 	__id = 0
 
 # Mod name currently being loaded
-static func get_phase() -> StringName:
+func get_phase() -> StringName:
 	return __phase
